@@ -1,0 +1,18 @@
+export default function SuccessPage() {
+  return (
+    <main className="min-h-screen bg-white text-black">
+      <div className="mx-auto max-w-2xl px-6 py-12">
+        <h1 className="text-3xl font-bold">You’re in 🎉</h1>
+        <p className="mt-3 text-gray-700">
+          Payment received. Next step is linking your account to Pro access.
+        </p>
+        <a
+          href="/"
+          className="mt-6 inline-block rounded-md bg-black px-4 py-2 text-sm font-medium text-white"
+        >
+          Back to today
+        </a>
+      </div>
+    </main>
+  )
+}
