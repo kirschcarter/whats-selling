@@ -6,23 +6,19 @@ export const runtime = "nodejs"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string)
 
-function isActiveSub(status: Stripe.Subscription.Status) {
-  return status === "active" || status === "trialing"
-}
-
 export async function POST(req: Request) {
   const sig = (await headers()).get("stripe-signature")
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
+  const secret = process.env.STRIPE_WEBHOOK_SECRET
 
-  if (!sig || !webhookSecret) {
-    return new Response("Missing webhook signature or secret", { status: 400 })
+  if (!sig || !secret) {
+    return new Response("Missing stripe signature or webhook secret", { status: 400 })
   }
 
   const rawBody = await req.text()
 
   let event: Stripe.Event
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret)
+    event = stripe.webhooks.constructEvent(rawBody, sig, secret)
   } catch (err: any) {
     return new Response(`Webhook signature verification failed: ${err?.message ?? "unknown"}`, {
       status: 400,
@@ -33,60 +29,36 @@ export async function POST(req: Request) {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session
 
-      const supabaseUserId = session.metadata?.supabase_user_id
+      const userId = session.metadata?.supabase_user_id
+      const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id
       const subscriptionId =
         typeof session.subscription === "string" ? session.subscription : session.subscription?.id
-      const customerId =
-        typeof session.customer === "string" ? session.customer : session.customer?.id
 
-      if (!supabaseUserId || !subscriptionId || !customerId) {
-        return new Response("Missing metadata or subscription or customer", { status: 200 })
-      }
+      if (!userId) return new Response("No supabase_user_id in metadata", { status: 200 })
 
-      const sub = await stripe.subscriptions.retrieve(subscriptionId)
-
-      await supabaseAdmin
+      // Mark user Pro after successful checkout
+      const { error } = await supabaseAdmin
         .from("profiles")
         .upsert(
           {
-            id: supabaseUserId,
-            is_pro: isActiveSub(sub.status),
-            stripe_customer_id: customerId,
-            stripe_subscription_id: sub.id,
-            stripe_price_id: sub.items.data[0]?.price?.id ?? null,
-            current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+            id: userId,
+            is_pro: true,
+            stripe_customer_id: customerId ?? null,
+            stripe_subscription_id: subscriptionId ?? null,
           },
           { onConflict: "id" }
         )
 
-      return new Response("ok", { status: 200 })
-    }
-
-    if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
-      const sub = event.data.object as Stripe.Subscription
-
-      const supabaseUserId = sub.metadata?.supabase_user_id
-      if (!supabaseUserId) {
-        return new Response("No supabase_user_id on subscription metadata", { status: 200 })
+      if (error) {
+        return new Response(`Supabase update failed: ${error.message}`, { status: 500 })
       }
 
-      await supabaseAdmin
-        .from("profiles")
-        .update({
-          is_pro: isActiveSub(sub.status),
-          stripe_customer_id: typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null,
-          stripe_subscription_id: sub.id,
-          stripe_price_id: sub.items.data[0]?.price?.id ?? null,
-          current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
-        })
-        .eq("id", supabaseUserId)
-
       return new Response("ok", { status: 200 })
     }
 
+    // ignore other events for now
     return new Response("ignored", { status: 200 })
   } catch (err: any) {
     return new Response(`Webhook handler failed: ${err?.message ?? "unknown"}`, { status: 500 })
   }
 }
-
